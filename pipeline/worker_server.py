@@ -11,6 +11,7 @@ import socket
 import sys
 import threading
 import time
+from typing import Optional
 import cv2
 import numpy as np
 from fastapi import FastAPI, Request
@@ -23,14 +24,35 @@ app = FastAPI(title="YOLO worker", docs_url=None, redoc_url=None)
 model = None
 
 
+def _subnet_broadcast() -> Optional[str]:
+    """Get subnet-directed broadcast (e.g. 192.168.0.255) so beacons reach orchestrator on same LAN."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        parts = ip.split(".")
+        if len(parts) == 4 and parts[0] in ("10", "172", "192"):
+            parts[-1] = "255"
+            return ".".join(parts)
+    except Exception:
+        pass
+    return None
+
+
 def _beacon_loop(port: int):
-    """Broadcast 'YOLO_WORKER|port' to local network so the dashboard can discover this worker."""
+    """Broadcast 'YOLO_WORKER|port' so the dashboard (orchestrator) can discover this worker."""
     msg = f"{BEACON_PREFIX}{port}\n".encode("utf-8")
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    targets = [("255.255.255.255", DISCOVERY_PORT)]
+    sub = _subnet_broadcast()
+    if sub:
+        targets.append((sub, DISCOVERY_PORT))
     while True:
         try:
-            sock.sendto(msg, ("255.255.255.255", DISCOVERY_PORT))
+            for host, p in targets:
+                sock.sendto(msg, (host, p))
         except Exception:
             pass
         time.sleep(2)

@@ -19,9 +19,7 @@ from pipeline.camera import capture_frames
 from pipeline.discovery import DISCOVERY_PORT, parse_beacon
 from pipeline.extract import extract_frames
 
-# Optional: comma-separated worker URLs. If set, discovery is disabled and these are used.
-WORKER_URLS_ENV = os.getenv("WORKER_URLS", "")
-WORKER_URLS = [u.strip() for u in WORKER_URLS_ENV.split(",") if u.strip()]
+# Workers are added by discovery only (UDP beacon). No manual worker URLs.
 
 INPUT_QUEUE_MAXSIZE = 64
 BROADCAST_INTERVAL = 0.1
@@ -269,26 +267,18 @@ async def startup():
     discovered_workers = {}
     workers_stats = {}
 
-    if WORKER_URLS:
-        # Manual mode: seed discovered workers (never expire)
-        for url in WORKER_URLS:
-            discovered_workers[url] = time.time() + 1e9
-        async with stats_lock:
-            for url in WORKER_URLS:
-                ensure_stats(url)
-    else:
-        # Auto-discover: listen for UDP beacons
-        discovery_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        discovery_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        discovery_socket.setblocking(False)
-        try:
-            discovery_socket.bind(("", DISCOVERY_PORT))
-        except OSError:
-            discovery_socket.close()
-            discovery_socket = None
-        if discovery_socket:
-            loop.add_reader(discovery_socket.fileno(), _discovery_reader)
-            asyncio.create_task(discovery_cleanup_task())
+    # Discovery only: listen for UDP beacons from workers on the LAN
+    discovery_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    discovery_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    discovery_socket.setblocking(False)
+    try:
+        discovery_socket.bind(("", DISCOVERY_PORT))
+    except OSError:
+        discovery_socket.close()
+        discovery_socket = None
+    if discovery_socket:
+        loop.add_reader(discovery_socket.fileno(), _discovery_reader)
+        asyncio.create_task(discovery_cleanup_task())
 
     latest_broadcast = {
         "frame_index": 0,
@@ -340,6 +330,13 @@ def camera_stop():
 def camera_status():
     """Return whether camera is currently feeding."""
     return {"camera_running": camera_running}
+
+
+@app.get("/discovery/status")
+def discovery_status():
+    """Return whether discovery is listening (UDP port). For dashboard and troubleshooting."""
+    listening = discovery_socket is not None
+    return {"enabled": listening, "udp_port": DISCOVERY_PORT}
 
 
 def _start_worker_process(port: int) -> bool:
