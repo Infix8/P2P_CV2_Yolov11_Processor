@@ -4,7 +4,7 @@ Lightweight pipeline: upload a video → frames at 640×480 JPEG → sent to **n
 
 ## How to use it
 
-- **Desktop (dashboard):** Run the app. Workers are **discovery-only** (no manual URLs).
+- **Desktop (dashboard):** Run the app **without** setting `WORKER_URLS`. It auto-discovers workers on the LAN.
   ```bash
   uvicorn main:app --reload --host 0.0.0.0 --port 8000
   ```
@@ -70,9 +70,16 @@ On the machine where you want the dashboard (e.g. your desktop):
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-Open http://localhost:8000. Start workers on the laptop (or same PC); they will appear within a few seconds. **Nodes are added by discovery only** (UDP beacon on port 9555); there is no manual “add worker URL” in the dashboard.
+Open http://localhost:8000. Start workers on the laptop (or same PC); they will appear within a few seconds. No manual IP setup needed.
 
-**Workers on laptop not visible on desktop?** Use the same Wi‑Fi/LAN. On the **desktop** (orchestrator), allow **inbound UDP port 9555** in Windows Firewall (or your firewall). On the laptop, workers send beacons; allow outbound UDP. Restart workers after changing firewall rules. The dashboard shows a troubleshooting hint when no workers are discovered.
+**Optional – manual worker URLs** (disables discovery):
+
+```bash
+set WORKER_URLS=http://192.168.0.107:9001,http://192.168.0.107:9002,http://192.168.0.107:9003,http://192.168.0.107:9004
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```
+
+Open http://localhost:8000 in a browser. Upload a video; the dashboard shows live inference and stats for each worker.
 
 ---
 
@@ -92,12 +99,12 @@ python -m pipeline.worker_server 9003
 python -m pipeline.worker_server 9004
 ```
 
-- If the desktop still doesn’t discover them: on the **desktop** allow **inbound UDP 9555** (discovery). On the laptop allow **inbound TCP 9001–9004** (so the desktop can send frames to workers).
+- If the desktop can’t connect, allow the worker ports through the laptop’s firewall (e.g. Windows: allow inbound TCP 9001–9004).
 
 ### 2. On the desktop (dashboard)
 
 - Install the project and deps: `pip install -r requirements.txt`
-- Start the app (discovery-only, no manual worker URLs):
+- Start the app **without** setting WORKER_URLS (workers are auto-discovered):
 
 ```bash
 uvicorn main:app --reload --host 0.0.0.0 --port 8000

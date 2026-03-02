@@ -2,8 +2,6 @@
 import asyncio
 import os
 import socket
-import subprocess
-import sys
 import tempfile
 import threading
 import time
@@ -19,7 +17,9 @@ from pipeline.camera import capture_frames
 from pipeline.discovery import DISCOVERY_PORT, parse_beacon
 from pipeline.extract import extract_frames
 
-# Workers are added by discovery only (UDP beacon). No manual worker URLs.
+# Optional: comma-separated worker URLs. If set, discovery is disabled and these are used.
+WORKER_URLS_ENV = os.getenv("WORKER_URLS", "")
+WORKER_URLS = [u.strip() for u in WORKER_URLS_ENV.split(",") if u.strip()]
 
 INPUT_QUEUE_MAXSIZE = 64
 BROADCAST_INTERVAL = 0.1
@@ -43,9 +43,6 @@ loop: asyncio.AbstractEventLoop = None
 discovery_socket: socket.socket = None
 round_robin_index: int = 0
 camera_running: bool = False
-# Worker nodes started from this orchestrator (port -> subprocess.Popen)
-worker_processes: dict = None
-worker_processes_lock: threading.Lock = None
 
 
 def get_active_urls():
@@ -253,10 +250,8 @@ def feed_camera_to_queue(device: int = 0):
 async def startup():
     global sync_input_queue, in_queue, out_queue, discovered_workers, workers_stats
     global discovery_lock, stats_lock, latest_broadcast, broadcast_lock, ws_connections, loop
-    global discovery_socket, worker_processes, worker_processes_lock
+    global discovery_socket
     loop = asyncio.get_running_loop()
-    worker_processes = {}
-    worker_processes_lock = threading.Lock()
     sync_input_queue = Queue(maxsize=INPUT_QUEUE_MAXSIZE)
     in_queue = asyncio.Queue()
     out_queue = asyncio.Queue()
@@ -267,18 +262,26 @@ async def startup():
     discovered_workers = {}
     workers_stats = {}
 
-    # Discovery only: listen for UDP beacons from workers on the LAN
-    discovery_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    discovery_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    discovery_socket.setblocking(False)
-    try:
-        discovery_socket.bind(("", DISCOVERY_PORT))
-    except OSError:
-        discovery_socket.close()
-        discovery_socket = None
-    if discovery_socket:
-        loop.add_reader(discovery_socket.fileno(), _discovery_reader)
-        asyncio.create_task(discovery_cleanup_task())
+    if WORKER_URLS:
+        # Manual mode: seed discovered workers (never expire)
+        for url in WORKER_URLS:
+            discovered_workers[url] = time.time() + 1e9
+        async with stats_lock:
+            for url in WORKER_URLS:
+                ensure_stats(url)
+    else:
+        # Auto-discover: listen for UDP beacons
+        discovery_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        discovery_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        discovery_socket.setblocking(False)
+        try:
+            discovery_socket.bind(("", DISCOVERY_PORT))
+        except OSError:
+            discovery_socket.close()
+            discovery_socket = None
+        if discovery_socket:
+            loop.add_reader(discovery_socket.fileno(), _discovery_reader)
+            asyncio.create_task(discovery_cleanup_task())
 
     latest_broadcast = {
         "frame_index": 0,
@@ -330,76 +333,6 @@ def camera_stop():
 def camera_status():
     """Return whether camera is currently feeding."""
     return {"camera_running": camera_running}
-
-
-@app.get("/discovery/status")
-def discovery_status():
-    """Return whether discovery is listening (UDP port). For dashboard and troubleshooting."""
-    listening = discovery_socket is not None
-    return {"enabled": listening, "udp_port": DISCOVERY_PORT}
-
-
-def _start_worker_process(port: int) -> bool:
-    """Start worker server as subprocess. Returns True if started."""
-    cwd = Path(__file__).resolve().parent
-    try:
-        proc = subprocess.Popen(
-            [sys.executable, "-m", "pipeline.worker_server", str(port)],
-            cwd=cwd,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        with worker_processes_lock:
-            worker_processes[port] = proc
-        return True
-    except Exception:
-        return False
-
-
-@app.post("/workers/start")
-def workers_start(port: int = 9001):
-    """Start a worker node on this device on the given port."""
-    with worker_processes_lock:
-        if port in worker_processes and worker_processes[port].poll() is None:
-            return {"status": "already_running", "port": port}
-    if _start_worker_process(port):
-        return {"status": "started", "port": port}
-    return {"status": "error", "port": port}
-
-
-@app.post("/workers/stop")
-def workers_stop(port: int = 9001):
-    """Stop a worker node on the given port."""
-    with worker_processes_lock:
-        proc = worker_processes.pop(port, None)
-    if proc is None:
-        return {"status": "not_found", "port": port}
-    try:
-        proc.terminate()
-        proc.wait(timeout=5)
-    except Exception:
-        try:
-            proc.kill()
-        except Exception:
-            pass
-    return {"status": "stopped", "port": port}
-
-
-@app.get("/workers")
-def workers_list():
-    """List worker nodes started from this orchestrator (port -> running)."""
-    with worker_processes_lock:
-        result = []
-        dead = []
-        for port, proc in list(worker_processes.items()):
-            alive = proc.poll() is None
-            if not alive:
-                dead.append(port)
-            result.append({"port": port, "running": alive})
-        for port in dead:
-            worker_processes.pop(port, None)
-    return {"workers": sorted(result, key=lambda x: x["port"])}
 
 
 @app.websocket("/ws")
