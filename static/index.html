@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Video processing pipeline</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 1rem; background: #1a1a1a; color: #e0e0e0; }
+    h1 { margin-top: 0; }
+    .discovery { font-size: 0.9rem; color: #8f8; margin-bottom: 1rem; }
+    .discovery.none { color: #f88; }
+    .upload { margin-bottom: 1.5rem; }
+    .upload input[type="file"] { margin-right: 0.5rem; }
+    .upload button { padding: 0.4rem 0.8rem; cursor: pointer; }
+    .status { font-size: 0.9rem; color: #888; margin-top: 0.5rem; }
+    .stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+    .stat-card { background: #2a2a2a; padding: 1rem; border-radius: 8px; }
+    .stat-card h3 { margin: 0 0 0.5rem 0; font-size: 1rem; }
+    .stat-card .worker-url { font-size: 0.7rem; color: #6a6; word-break: break-all; margin-bottom: 0.5rem; }
+    .stat-card p { margin: 0.25rem 0; font-size: 0.9rem; }
+    .stat-card .frame-ids { font-size: 0.75rem; color: #aaa; margin-top: 0.5rem; max-height: 4.5em; overflow-y: auto; word-break: break-all; }
+    .video-wrap { background: #000; border-radius: 8px; overflow: hidden; max-width: 640px; }
+    .video-wrap img { display: block; width: 100%; height: auto; }
+    .video-wrap .placeholder { padding: 2rem; text-align: center; color: #666; }
+    .frame-info { font-size: 0.85rem; color: #888; margin-top: 0.5rem; }
+  </style>
+</head>
+<body>
+  <h1>Video processing pipeline</h1>
+  <div class="discovery" id="discovery">Discovering workers…</div>
+
+  <div class="upload">
+    <form id="uploadForm">
+      <input type="file" id="fileInput" accept="video/*" required>
+      <button type="submit">Upload & process</button>
+    </form>
+    <div class="status" id="status"></div>
+  </div>
+
+  <div class="stats" id="stats"></div>
+
+  <div class="video-wrap">
+    <div class="placeholder" id="placeholder">Connect and upload a video to see output with bounding boxes.</div>
+    <img id="videoOut" alt="Output" style="display: none;">
+  </div>
+  <div class="frame-info" id="frameInfo"></div>
+
+  <script>
+    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = protocol + '//' + location.host + '/ws';
+    let ws = null;
+
+    function renderWorkers(workers) {
+      const container = document.getElementById('stats');
+      const discoveryEl = document.getElementById('discovery');
+      if (!workers || workers.length === 0) {
+        discoveryEl.textContent = 'No workers discovered. Start worker servers on the same network (python -m pipeline.worker_server 9001, etc.).';
+        discoveryEl.className = 'discovery none';
+        container.innerHTML = '';
+        return;
+      }
+      discoveryEl.textContent = 'Discovered ' + workers.length + ' worker(s).';
+      discoveryEl.className = 'discovery';
+      container.innerHTML = workers.map(function (w) {
+        const id = w.worker_id;
+        const url = (w.worker_url || '').replace(/^https?:\/\//, '');
+        const frames = w.frames_processed;
+        const lat = w.last_latency_ms !== undefined && w.last_latency_ms !== null ? w.last_latency_ms : '—';
+        const err = w.errors || 0;
+        const ids = (w.frame_ids && w.frame_ids.length) ? w.frame_ids.join(', ') : '—';
+        return '<div class="stat-card">' +
+          '<h3>Worker ' + id + '</h3>' +
+          '<p class="worker-url">' + url + '</p>' +
+          '<p>Frames: <span id="w' + id + '-frames">' + frames + '</span></p>' +
+          '<p>Latency: <span id="w' + id + '-latency">' + lat + '</span> ms</p>' +
+          '<p>Errors: <span id="w' + id + '-errors">' + err + '</span></p>' +
+          '<p class="frame-ids">Frame IDs: <span id="w' + id + '-frame-ids">' + ids + '</span></p>' +
+          '</div>';
+      }).join('');
+    }
+
+    function connect() {
+      ws = new WebSocket(wsUrl);
+      ws.onmessage = function (e) {
+        const msg = JSON.parse(e.data);
+        if (msg.image_b64) {
+          document.getElementById('placeholder').style.display = 'none';
+          const img = document.getElementById('videoOut');
+          img.src = 'data:image/jpeg;base64,' + msg.image_b64;
+          img.style.display = 'block';
+        }
+        if (msg.frame_index !== undefined) {
+          document.getElementById('frameInfo').textContent = 'Frame #' + msg.frame_index;
+        }
+        if (msg.workers && Array.isArray(msg.workers)) {
+          renderWorkers(msg.workers);
+        }
+      };
+      ws.onclose = function () {
+        setTimeout(connect, 2000);
+      };
+    }
+    connect();
+
+    document.getElementById('uploadForm').onsubmit = async function (e) {
+      e.preventDefault();
+      const input = document.getElementById('fileInput');
+      const status = document.getElementById('status');
+      if (!input.files.length) return;
+      status.textContent = 'Uploading…';
+      const form = new FormData();
+      form.append('video', input.files[0]);
+      try {
+        const r = await fetch('/upload', { method: 'POST', body: form });
+        const data = await r.json();
+        status.textContent = 'Processing: ' + (data.file || 'video');
+      } catch (err) {
+        status.textContent = 'Error: ' + err.message;
+      }
+    };
+  </script>
+</body>
+</html>

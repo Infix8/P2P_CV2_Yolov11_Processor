@@ -1,0 +1,6 @@
+# Minimal deps for running workers only (no httpx, no multipart).
+# Use on laptop/other device: pip install -r requirements-worker.txt
+fastapi
+uvicorn[standard]
+opencv-python-headless
+ultralytics

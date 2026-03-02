@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+.env
+.idea/
+.vscode/
+*.log
+*.mp4
+*.zip
+*.pt
