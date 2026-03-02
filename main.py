@@ -2,6 +2,8 @@
 import asyncio
 import os
 import socket
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -13,6 +15,7 @@ from fastapi import FastAPI, File, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
+from pipeline.camera import capture_frames
 from pipeline.discovery import DISCOVERY_PORT, parse_beacon
 from pipeline.extract import extract_frames
 
@@ -41,6 +44,10 @@ ws_connections: list = None
 loop: asyncio.AbstractEventLoop = None
 discovery_socket: socket.socket = None
 round_robin_index: int = 0
+camera_running: bool = False
+# Worker nodes started from this orchestrator (port -> subprocess.Popen)
+worker_processes: dict = None
+worker_processes_lock: threading.Lock = None
 
 
 def get_active_urls():
@@ -228,12 +235,30 @@ def feed_video_to_queue(video_path: str):
         Path(video_path).unlink(missing_ok=True)
 
 
+def feed_camera_to_queue(device: int = 0):
+    """Run in thread: capture from camera and put frames on sync_input_queue."""
+    global camera_running
+    camera_running = True
+    try:
+        for frame_index, jpeg_bytes in capture_frames(
+            device=device, stop_flag=lambda: not camera_running
+        ):
+            try:
+                sync_input_queue.put((frame_index, jpeg_bytes), timeout=0.5)
+            except Exception:
+                pass
+    finally:
+        camera_running = False
+
+
 @app.on_event("startup")
 async def startup():
     global sync_input_queue, in_queue, out_queue, discovered_workers, workers_stats
     global discovery_lock, stats_lock, latest_broadcast, broadcast_lock, ws_connections, loop
-    global discovery_socket
+    global discovery_socket, worker_processes, worker_processes_lock
     loop = asyncio.get_running_loop()
+    worker_processes = {}
+    worker_processes_lock = threading.Lock()
     sync_input_queue = Queue(maxsize=INPUT_QUEUE_MAXSIZE)
     in_queue = asyncio.Queue()
     out_queue = asyncio.Queue()
@@ -291,6 +316,93 @@ async def upload(video: UploadFile = File(...)):
         path = f.name
     threading.Thread(target=feed_video_to_queue, args=(path,), daemon=True).start()
     return {"status": "processing", "file": video.filename}
+
+
+@app.post("/camera/start")
+def camera_start(device: int = 0):
+    """Start feeding camera (device index, default 0) into the pipeline."""
+    global camera_running
+    if camera_running:
+        return {"status": "already_running"}
+    threading.Thread(target=feed_camera_to_queue, args=(device,), daemon=True).start()
+    return {"status": "started", "device": device}
+
+
+@app.post("/camera/stop")
+def camera_stop():
+    """Stop camera capture."""
+    global camera_running
+    camera_running = False
+    return {"status": "stopped"}
+
+
+@app.get("/camera/status")
+def camera_status():
+    """Return whether camera is currently feeding."""
+    return {"camera_running": camera_running}
+
+
+def _start_worker_process(port: int) -> bool:
+    """Start worker server as subprocess. Returns True if started."""
+    cwd = Path(__file__).resolve().parent
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "pipeline.worker_server", str(port)],
+            cwd=cwd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        with worker_processes_lock:
+            worker_processes[port] = proc
+        return True
+    except Exception:
+        return False
+
+
+@app.post("/workers/start")
+def workers_start(port: int = 9001):
+    """Start a worker node on this device on the given port."""
+    with worker_processes_lock:
+        if port in worker_processes and worker_processes[port].poll() is None:
+            return {"status": "already_running", "port": port}
+    if _start_worker_process(port):
+        return {"status": "started", "port": port}
+    return {"status": "error", "port": port}
+
+
+@app.post("/workers/stop")
+def workers_stop(port: int = 9001):
+    """Stop a worker node on the given port."""
+    with worker_processes_lock:
+        proc = worker_processes.pop(port, None)
+    if proc is None:
+        return {"status": "not_found", "port": port}
+    try:
+        proc.terminate()
+        proc.wait(timeout=5)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+    return {"status": "stopped", "port": port}
+
+
+@app.get("/workers")
+def workers_list():
+    """List worker nodes started from this orchestrator (port -> running)."""
+    with worker_processes_lock:
+        result = []
+        dead = []
+        for port, proc in list(worker_processes.items()):
+            alive = proc.poll() is None
+            if not alive:
+                dead.append(port)
+            result.append({"port": port, "running": alive})
+        for port in dead:
+            worker_processes.pop(port, None)
+    return {"workers": sorted(result, key=lambda x: x["port"])}
 
 
 @app.websocket("/ws")

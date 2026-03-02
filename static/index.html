@@ -8,11 +8,20 @@
     * { box-sizing: border-box; }
     body { font-family: system-ui, sans-serif; margin: 0; padding: 1rem; background: #1a1a1a; color: #e0e0e0; }
     h1 { margin-top: 0; }
+    .tabs { display: flex; gap: 0; margin-bottom: 1rem; border-bottom: 1px solid #444; }
+    .tabs button { padding: 0.6rem 1.2rem; background: #2a2a2a; border: none; border-bottom: 2px solid transparent; color: #aaa; cursor: pointer; font-size: 1rem; }
+    .tabs button:hover { color: #e0e0e0; }
+    .tabs button.active { color: #8f8; border-bottom-color: #8f8; background: #252525; }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
     .discovery { font-size: 0.9rem; color: #8f8; margin-bottom: 1rem; }
     .discovery.none { color: #f88; }
-    .upload { margin-bottom: 1.5rem; }
+    .upload { margin-bottom: 1rem; }
     .upload input[type="file"] { margin-right: 0.5rem; }
     .upload button { padding: 0.4rem 0.8rem; cursor: pointer; }
+    .camera { margin-bottom: 1.5rem; }
+    .camera button { padding: 0.4rem 0.8rem; cursor: pointer; margin-right: 0.5rem; }
+    .camera .live { color: #8f8; }
     .status { font-size: 0.9rem; color: #888; margin-top: 0.5rem; }
     .stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
     .stat-card { background: #2a2a2a; padding: 1rem; border-radius: 8px; }
@@ -20,42 +29,84 @@
     .stat-card .worker-url { font-size: 0.7rem; color: #6a6; word-break: break-all; margin-bottom: 0.5rem; }
     .stat-card p { margin: 0.25rem 0; font-size: 0.9rem; }
     .stat-card .frame-ids { font-size: 0.75rem; color: #aaa; margin-top: 0.5rem; max-height: 4.5em; overflow-y: auto; word-break: break-all; }
-    .video-wrap { background: #000; border-radius: 8px; overflow: hidden; max-width: 640px; }
+    .video-wrap { background: #000; border-radius: 8px; overflow: hidden; max-width: 640px; margin-bottom: 1rem; }
     .video-wrap img { display: block; width: 100%; height: auto; }
     .video-wrap .placeholder { padding: 2rem; text-align: center; color: #666; }
     .frame-info { font-size: 0.85rem; color: #888; margin-top: 0.5rem; }
+    .worker-creator { margin-bottom: 1rem; }
+    .worker-creator input { width: 5rem; padding: 0.4rem; margin-right: 0.5rem; background: #333; border: 1px solid #555; color: #e0e0e0; border-radius: 4px; }
+    .worker-creator button { padding: 0.4rem 0.8rem; cursor: pointer; margin-right: 0.5rem; margin-bottom: 0.5rem; }
+    .worker-list { list-style: none; padding: 0; margin: 0; }
+    .worker-list li { background: #2a2a2a; padding: 0.6rem 1rem; margin-bottom: 0.5rem; border-radius: 6px; display: flex; align-items: center; justify-content: space-between; }
+    .worker-list li .port { font-weight: bold; }
+    .worker-list li .running { color: #8f8; font-size: 0.9rem; }
+    .worker-list li .stopped { color: #888; font-size: 0.9rem; }
   </style>
 </head>
 <body>
   <h1>Video processing pipeline</h1>
-  <div class="discovery" id="discovery">Discovering workers…</div>
-
-  <div class="upload">
-    <form id="uploadForm">
-      <input type="file" id="fileInput" accept="video/*" required>
-      <button type="submit">Upload & process</button>
-    </form>
-    <div class="status" id="status"></div>
+  <div class="tabs">
+    <button type="button" id="tabOrchestrator" class="active">Orchestrator</button>
+    <button type="button" id="tabWorkers">Worker nodes creator</button>
   </div>
 
-  <div class="stats" id="stats"></div>
-
-  <div class="video-wrap">
-    <div class="placeholder" id="placeholder">Connect and upload a video to see output with bounding boxes.</div>
-    <img id="videoOut" alt="Output" style="display: none;">
+  <div id="panelOrchestrator" class="tab-panel active">
+    <div class="discovery" id="discovery">Discovering workers…</div>
+    <div class="upload">
+      <form id="uploadForm">
+        <input type="file" id="fileInput" accept="video/*" required>
+        <button type="submit">Upload & process</button>
+      </form>
+      <div class="status" id="status"></div>
+    </div>
+    <div class="camera">
+      <button type="button" id="cameraStart">Start camera</button>
+      <button type="button" id="cameraStop">Stop camera</button>
+      <span id="cameraStatus" class="status"></span>
+    </div>
+    <div class="stats" id="stats"></div>
+    <div class="video-wrap">
+      <div class="placeholder" id="placeholder">Connect and upload a video or start camera to see output with bounding boxes.</div>
+      <img id="videoOut" alt="Output" style="display: none;">
+    </div>
+    <div class="frame-info" id="frameInfo"></div>
   </div>
-  <div class="frame-info" id="frameInfo"></div>
+
+  <div id="panelWorkers" class="tab-panel">
+    <p class="status">Start YOLO worker nodes on <strong>this device</strong>. They will be auto-discovered by the orchestrator. Same device can run both orchestrator and workers.</p>
+    <div class="worker-creator">
+      <input type="number" id="workerPort" value="9001" min="1024" max="65535" placeholder="Port">
+      <button type="button" id="workerStartOne">Start one worker</button>
+      <button type="button" id="workerStartFour">Start 4 workers (9001–9004)</button>
+    </div>
+    <div class="status" id="workerStatus"></div>
+    <ul class="worker-list" id="workerList"></ul>
+  </div>
 
   <script>
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = protocol + '//' + location.host + '/ws';
     let ws = null;
 
+    document.getElementById('tabOrchestrator').onclick = function () {
+      document.getElementById('tabOrchestrator').classList.add('active');
+      document.getElementById('tabWorkers').classList.remove('active');
+      document.getElementById('panelOrchestrator').classList.add('active');
+      document.getElementById('panelWorkers').classList.remove('active');
+    };
+    document.getElementById('tabWorkers').onclick = function () {
+      document.getElementById('tabWorkers').classList.add('active');
+      document.getElementById('tabOrchestrator').classList.remove('active');
+      document.getElementById('panelWorkers').classList.add('active');
+      document.getElementById('panelOrchestrator').classList.remove('active');
+      refreshWorkerList();
+    };
+
     function renderWorkers(workers) {
       const container = document.getElementById('stats');
       const discoveryEl = document.getElementById('discovery');
       if (!workers || workers.length === 0) {
-        discoveryEl.textContent = 'No workers discovered. Start worker servers on the same network (python -m pipeline.worker_server 9001, etc.).';
+        discoveryEl.textContent = 'No workers discovered. Use "Worker nodes creator" tab to start workers on this device, or on another device on the same network.';
         discoveryEl.className = 'discovery none';
         container.innerHTML = '';
         return;
@@ -119,6 +170,86 @@
         status.textContent = 'Error: ' + err.message;
       }
     };
+
+    function updateCameraStatus() {
+      fetch('/camera/status').then(function (r) { return r.json(); }).then(function (d) {
+        const el = document.getElementById('cameraStatus');
+        el.textContent = d.camera_running ? 'Camera live' : 'Camera off';
+        el.className = d.camera_running ? 'status live' : 'status';
+      }).catch(function () {});
+    }
+    setInterval(updateCameraStatus, 2000);
+    updateCameraStatus();
+
+    document.getElementById('cameraStart').onclick = async function () {
+      try {
+        const r = await fetch('/camera/start', { method: 'POST' });
+        const data = await r.json();
+        document.getElementById('cameraStatus').textContent = data.status === 'started' ? 'Camera live' : data.status;
+        if (data.status === 'started') document.getElementById('cameraStatus').className = 'status live';
+      } catch (err) {
+        document.getElementById('cameraStatus').textContent = 'Error: ' + err.message;
+      }
+    };
+    document.getElementById('cameraStop').onclick = async function () {
+      try {
+        await fetch('/camera/stop', { method: 'POST' });
+        document.getElementById('cameraStatus').textContent = 'Camera off';
+        document.getElementById('cameraStatus').className = 'status';
+      } catch (err) {
+        document.getElementById('cameraStatus').textContent = 'Error: ' + err.message;
+      }
+    };
+
+    function refreshWorkerList() {
+      fetch('/workers').then(function (r) { return r.json(); }).then(function (d) {
+        const list = document.getElementById('workerList');
+        list.innerHTML = '';
+        (d.workers || []).forEach(function (w) {
+          const li = document.createElement('li');
+          li.innerHTML = '<span class="port">Port ' + w.port + '</span>' +
+            '<span class="' + (w.running ? 'running' : 'stopped') + '">' + (w.running ? 'Running' : 'Stopped') + '</span>' +
+            (w.running ? '<button type="button" data-port="' + w.port + '">Stop</button>' : '');
+          if (w.running) {
+            li.querySelector('button').onclick = function () {
+              const port = parseInt(this.getAttribute('data-port'), 10);
+              fetch('/workers/stop?port=' + port, { method: 'POST' }).then(function () { refreshWorkerList(); });
+            };
+          }
+          list.appendChild(li);
+        });
+      }).catch(function () {});
+    }
+
+    document.getElementById('workerStartOne').onclick = async function () {
+      const port = parseInt(document.getElementById('workerPort').value, 10) || 9001;
+      document.getElementById('workerStatus').textContent = 'Starting worker on port ' + port + '…';
+      try {
+        const r = await fetch('/workers/start?port=' + port, { method: 'POST' });
+        const data = await r.json();
+        document.getElementById('workerStatus').textContent = data.status === 'started' ? 'Started port ' + port : data.status + ' (port ' + port + ')';
+        refreshWorkerList();
+      } catch (err) {
+        document.getElementById('workerStatus').textContent = 'Error: ' + err.message;
+      }
+    };
+    document.getElementById('workerStartFour').onclick = async function () {
+      document.getElementById('workerStatus').textContent = 'Starting 4 workers…';
+      var done = 0;
+      for (var p = 9001; p <= 9004; p++) {
+        try {
+          var r = await fetch('/workers/start?port=' + p, { method: 'POST' });
+          var data = await r.json();
+          if (data.status === 'started') done++;
+        } catch (e) {}
+      }
+      document.getElementById('workerStatus').textContent = 'Started ' + done + ' worker(s) on ports 9001–9004.';
+      refreshWorkerList();
+    };
+
+    setInterval(function () {
+      if (document.getElementById('panelWorkers').classList.contains('active')) refreshWorkerList();
+    }, 3000);
   </script>
 </body>
 </html>

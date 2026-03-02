@@ -17,7 +17,7 @@ Lightweight pipeline: upload a video → frames at 640×480 JPEG → sent to **n
   ```
 - **Both on the same LAN.** Within a few seconds the dashboard shows **“Discovered 4 worker(s)”** and lists each worker’s URL. No manual IP or URL configuration.
 
-Open **http://localhost:8000** on the desktop and upload a video to process.
+Open **http://localhost:8000** on the desktop and upload a video to process. You can also use **Start camera** for live capture (same pipeline, 640×480 @ 10 fps); **Stop camera** to end.
 
 ## Setup
 
